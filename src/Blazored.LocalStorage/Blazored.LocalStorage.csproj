@@ -1,11 +1,11 @@
-﻿﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
+﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
 
   <PropertyGroup>
     <TargetFrameworks>net6.0;net5.0</TargetFrameworks>
 
     <Authors>Chris Sainty</Authors>
     <Company></Company>
-    <Copyright>Copyright 2020 (c) Chris Sainty. All rights reserved.</Copyright> 
+    <Copyright>Copyright 2020 (c) Chris Sainty. All rights reserved.</Copyright>
     <Description>A library to provide access to local storage in Blazor applications</Description>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
@@ -29,7 +29,7 @@
   <ItemGroup Condition="'$(TargetFramework)' == 'net5.0' or '$(TargetFramework)' == 'net6.0'">
     <SupportedPlatform Include="browser" />
   </ItemGroup>
-  
+
   <ItemGroup Condition="'$(TargetFramework)' == 'net5.0'">
     <PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="$(DotNet5Version)" />
   </ItemGroup>
