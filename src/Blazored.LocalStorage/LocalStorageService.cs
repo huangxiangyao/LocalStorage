@@ -1,146 +1,212 @@
-﻿using Blazored.LocalStorage.JsonConverters;
-using Microsoft.JSInterop;
 using System;
+using System.Collections.Generic;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
+using Blazored.LocalStorage.Serialization;
 
 namespace Blazored.LocalStorage
 {
-    public class LocalStorageService : ILocalStorageService, ISyncLocalStorageService
+    internal class LocalStorageService : ILocalStorageService, ISyncLocalStorageService
     {
-        private readonly IJSRuntime _jSRuntime;
-        private readonly IJSInProcessRuntime _jSInProcessRuntime;
+        private readonly IStorageProvider _storageProvider;
+        private readonly IJsonSerializer _serializer;
 
-        private JsonSerializerOptions _jsonOptions;
-
-        public LocalStorageService(IJSRuntime jSRuntime)
+        public LocalStorageService(IStorageProvider storageProvider, IJsonSerializer serializer)
         {
-            _jSRuntime = jSRuntime;
-            _jSInProcessRuntime = jSRuntime as IJSInProcessRuntime;
-            _jsonOptions = new JsonSerializerOptions();
-            _jsonOptions.Converters.Add(new TimespanJsonConverter());
+            _storageProvider = storageProvider;
+            _serializer = serializer;
         }
 
-        public async Task SetItemAsync(string key, object data)
+        public async ValueTask SetItemAsync<T>(string key, T data, CancellationToken? cancellationToken = null)
         {
-            if (string.IsNullOrEmpty(key))
+            if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentNullException(nameof(key));
 
-            var e = await RaiseOnChangingAsync(key, data);
+            var e = await RaiseOnChangingAsync(key, data).ConfigureAwait(false);
 
             if (e.Cancel)
                 return;
 
-            await _jSRuntime.InvokeAsync<object>("localStorage.setItem", key, JsonSerializer.Serialize(data, _jsonOptions));
+            var serialisedData = _serializer.Serialize(data);
+            await _storageProvider.SetItemAsync(key, serialisedData, cancellationToken).ConfigureAwait(false);
 
             RaiseOnChanged(key, e.OldValue, data);
         }
 
-        public async Task<T> GetItemAsync<T>(string key)
+        public async ValueTask SetItemAsStringAsync(string key, string data, CancellationToken? cancellationToken = null)
         {
-            if (string.IsNullOrEmpty(key))
+            if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentNullException(nameof(key));
 
-            var serialisedData = await _jSRuntime.InvokeAsync<string>("localStorage.getItem", key);
+            if (data is null)
+                throw new ArgumentNullException(nameof(data));
+
+            var e = await RaiseOnChangingAsync(key, data).ConfigureAwait(false);
+
+            if (e.Cancel)
+                return;
+
+            await _storageProvider.SetItemAsync(key, data, cancellationToken).ConfigureAwait(false);
+
+            RaiseOnChanged(key, e.OldValue, data);
+        }
+
+        public async ValueTask<T> GetItemAsync<T>(string key, CancellationToken? cancellationToken = null)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                throw new ArgumentNullException(nameof(key));
+
+            var serialisedData = await _storageProvider.GetItemAsync(key, cancellationToken).ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(serialisedData))
-                return default(T);
+                return default;
 
-            return JsonSerializer.Deserialize<T>(serialisedData, _jsonOptions);
+            try
+            {
+                return _serializer.Deserialize<T>(serialisedData);
+            }
+            catch (JsonException e) when (e.Path == "$" && typeof(T) == typeof(string))
+            {
+                // For backward compatibility return the plain string.
+                // On the next save a correct value will be stored and this Exception will not happen again, for this 'key'
+                return (T)(object)serialisedData;
+            }
         }
 
-        public async Task RemoveItemAsync(string key)
+        public ValueTask<string> GetItemAsStringAsync(string key, CancellationToken? cancellationToken = null)
         {
-            if (string.IsNullOrEmpty(key))
+            if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentNullException(nameof(key));
 
-            await _jSRuntime.InvokeAsync<object>("localStorage.removeItem", key);
+            return _storageProvider.GetItemAsync(key, cancellationToken);
         }
 
-        public async Task ClearAsync() => await _jSRuntime.InvokeAsync<object>("localStorage.clear");
-
-        public async Task<int> LengthAsync() => await _jSRuntime.InvokeAsync<int>("eval", "localStorage.length");
-
-        public async Task<string> KeyAsync(int index) => await _jSRuntime.InvokeAsync<string>("localStorage.key", index);
-
-        public async Task<bool> ContainKeyAsync(string key) => await _jSRuntime.InvokeAsync<bool>("localStorage.hasOwnProperty", key);
-
-        public void SetItem(string key, object data)
+        public ValueTask RemoveItemAsync(string key, CancellationToken? cancellationToken = null)
         {
-            if (string.IsNullOrEmpty(key))
+            if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentNullException(nameof(key));
 
-            if (_jSInProcessRuntime == null)
-                throw new InvalidOperationException("IJSInProcessRuntime not available");
+            return _storageProvider.RemoveItemAsync(key, cancellationToken);
+        }
+
+        public ValueTask ClearAsync(CancellationToken? cancellationToken = null)
+            => _storageProvider.ClearAsync(cancellationToken);
+
+        public ValueTask<int> LengthAsync(CancellationToken? cancellationToken = null)
+            => _storageProvider.LengthAsync(cancellationToken);
+
+        public ValueTask<string> KeyAsync(int index, CancellationToken? cancellationToken = null)
+            => _storageProvider.KeyAsync(index, cancellationToken);
+
+        public ValueTask<IEnumerable<string>> KeysAsync(CancellationToken? cancellationToken = null)
+            => _storageProvider.KeysAsync(cancellationToken);
+
+        public ValueTask<bool> ContainKeyAsync(string key, CancellationToken? cancellationToken = null)
+            => _storageProvider.ContainKeyAsync(key, cancellationToken);
+
+        public ValueTask RemoveItemsAsync(IEnumerable<string> keys, CancellationToken? cancellationToken = null)
+            => _storageProvider.RemoveItemsAsync(keys, cancellationToken);
+
+        public IEnumerable<string> Keys()
+        {
+           return _storageProvider.Keys();
+        }
+
+        public void SetItem<T>(string key, T data)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                throw new ArgumentNullException(nameof(key));
 
             var e = RaiseOnChangingSync(key, data);
 
             if (e.Cancel)
                 return;
 
-            _jSInProcessRuntime.Invoke<object>("localStorage.setItem", key, JsonSerializer.Serialize(data, _jsonOptions));
+            var serialisedData = _serializer.Serialize(data);
+            _storageProvider.SetItem(key, serialisedData);
+
+            RaiseOnChanged(key, e.OldValue, data);
+        }
+
+        public void SetItemAsString(string key, string data)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                throw new ArgumentNullException(nameof(key));
+
+            if (data is null)
+                throw new ArgumentNullException(nameof(data));
+
+            var e = RaiseOnChangingSync(key, data);
+
+            if (e.Cancel)
+                return;
+
+            _storageProvider.SetItem(key, data);
 
             RaiseOnChanged(key, e.OldValue, data);
         }
 
         public T GetItem<T>(string key)
         {
-            if (string.IsNullOrEmpty(key))
+            if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentNullException(nameof(key));
 
-            if (_jSInProcessRuntime == null)
-                throw new InvalidOperationException("IJSInProcessRuntime not available");
-
-            var serialisedData = _jSInProcessRuntime.Invoke<string>("localStorage.getItem", key);
+            var serialisedData = _storageProvider.GetItem(key);
 
             if (string.IsNullOrWhiteSpace(serialisedData))
-                return default(T);
+                return default;
 
-            return JsonSerializer.Deserialize<T>(serialisedData, _jsonOptions);
+            try
+            {
+                return _serializer.Deserialize<T>(serialisedData);
+            }
+            catch (JsonException e) when (e.Path == "$" && typeof(T) == typeof(string))
+            {
+                // For backward compatibility return the plain string.
+                // On the next save a correct value will be stored and this Exception will not happen again, for this 'key'
+                return (T)(object)serialisedData;
+            }
+        }
+
+        public string GetItemAsString(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                throw new ArgumentNullException(nameof(key));
+
+            return _storageProvider.GetItem(key);
         }
 
         public void RemoveItem(string key)
         {
-            if (string.IsNullOrEmpty(key))
+            if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentNullException(nameof(key));
-                
-            if (_jSInProcessRuntime == null)
-                throw new InvalidOperationException("IJSInProcessRuntime not available");
 
-            _jSInProcessRuntime.Invoke<object>("localStorage.removeItem", key);
+            _storageProvider.RemoveItem(key);
+        }
+
+        public void RemoveItems(IEnumerable<string> keys)
+        {
+            if (keys == null)
+                throw new ArgumentNullException(nameof(keys));
+
+            foreach (var key in keys)
+            {
+                _storageProvider.RemoveItem(key);
+            }
         }
 
         public void Clear()
-        {
-            if (_jSInProcessRuntime == null)
-                throw new InvalidOperationException("IJSInProcessRuntime not available");
-
-            _jSInProcessRuntime.Invoke<object>("localStorage.clear");
-        }
+            => _storageProvider.Clear();
 
         public int Length()
-        {
-            if (_jSInProcessRuntime == null)
-                throw new InvalidOperationException("IJSInProcessRuntime not available");
-
-            return _jSInProcessRuntime.Invoke<int>("eval", "localStorage.length");
-        }
+            => _storageProvider.Length();
 
         public string Key(int index)
-        {
-            if (_jSInProcessRuntime == null)
-                throw new InvalidOperationException("IJSInProcessRuntime not available");
-
-            return _jSInProcessRuntime.Invoke<string>("localStorage.key", index);
-        }
+            => _storageProvider.Key(index);
 
         public bool ContainKey(string key)
-        {
-            if (_jSInProcessRuntime == null)
-                throw new InvalidOperationException("IJSInProcessRuntime not available");
-
-            return _jSInProcessRuntime.Invoke<bool>("localStorage.hasOwnProperty", key);
-        }
+            => _storageProvider.ContainKey(key);
 
         public event EventHandler<ChangingEventArgs> Changing;
         private async Task<ChangingEventArgs> RaiseOnChangingAsync(string key, object data)
@@ -148,7 +214,7 @@ namespace Blazored.LocalStorage
             var e = new ChangingEventArgs
             {
                 Key = key,
-                OldValue = await GetItemAsync<object>(key),
+                OldValue = await GetItemInternalAsync<object>(key).ConfigureAwait(false),
                 NewValue = data
             };
 
@@ -162,13 +228,52 @@ namespace Blazored.LocalStorage
             var e = new ChangingEventArgs
             {
                 Key = key,
-                OldValue = ((ISyncLocalStorageService)this).GetItem<object>(key),
+                OldValue = GetItemInternal(key),
                 NewValue = data
             };
 
             Changing?.Invoke(this, e);
 
             return e;
+        }
+
+        private async Task<T> GetItemInternalAsync<T>(string key, CancellationToken? cancellationToken = null)
+        {
+            if (string.IsNullOrEmpty(key))
+                throw new ArgumentNullException(nameof(key));
+
+            var serialisedData = await _storageProvider.GetItemAsync(key, cancellationToken).ConfigureAwait(false);
+
+            if (string.IsNullOrWhiteSpace(serialisedData))
+                return default;
+            try
+            {
+                return _serializer.Deserialize<T>(serialisedData);
+            }
+            catch (JsonException)
+            {
+                return (T)(object)serialisedData;
+            }
+        }
+
+        private object GetItemInternal(string key)
+        {
+            if (string.IsNullOrEmpty(key))
+                throw new ArgumentNullException(nameof(key));
+
+            var serialisedData = _storageProvider.GetItem(key);
+
+            if (string.IsNullOrWhiteSpace(serialisedData))
+                return default;
+
+            try
+            {
+                return _serializer.Deserialize<object>(serialisedData);
+            }
+            catch (JsonException)
+            {
+                return serialisedData;
+            }
         }
 
         public event EventHandler<ChangedEventArgs> Changed;
